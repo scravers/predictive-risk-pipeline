@@ -38,9 +38,11 @@ def extract(dataset_name):
         dataset = fetch_ucirepo(id=572) 
         df = pd.concat([dataset.data.features, dataset.data.targets], axis=1)
     elif dataset_name == 'creditcard':
-        # Use the direct raw file URL to avoid missing fsspec/huggingface protocol dependencies
-        url = "https://huggingface.co/datasets/David-Egea/Creditcard-fraud-detection/raw/main/creditcard.csv"
-        df = pd.read_csv(url)
+        print("Downloading credit card dataset via Hugging Face datasets library...")
+        from datasets import load_dataset
+        # Officially pull the dataset into memory and convert to a Pandas DataFrame
+        hf_dataset = load_dataset("David-Egea/Creditcard-fraud-detection", split="train")
+        df = hf_dataset.to_pandas()
     
     # Save to a dataset-specific path in MinIO
     s3_path = f's3://raw-data/{dataset_name}/raw.csv'

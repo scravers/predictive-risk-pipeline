@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir \
     ucimlrepo \
     boto3 \
     s3fs \
-    joblib
+    joblib \
+    datasets
 
 # Copy your script into the container
 COPY pipeline.py /app/pipeline.py
