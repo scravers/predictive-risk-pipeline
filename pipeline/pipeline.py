@@ -112,8 +112,12 @@ def train_and_evaluate(dataset_name, threshold):
     
     y_pred = (y_prob >= threshold).astype(int)
 
-    print(classification_report(y_test, y_pred))
+    report_dict = classification_report(y_test, y_pred, output_dict=True)
+    report_text = classification_report(y_test, y_pred)
+    print(report_text)
     
+    prefix = f"{dataset_name}/threshold_{threshold}"
+
     # 1. Confusion Matrix
     plt.figure(figsize=(6,5))
     sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues')
@@ -121,8 +125,7 @@ def train_and_evaluate(dataset_name, threshold):
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     img_buffer.seek(0)
-    # Include dataset name and threshold in the S3 object key
-    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_confusion_matrix_{threshold}.png', Body=img_buffer)
+    s3_client.put_object(Bucket='models', Key=f'{prefix}/confusion_matrix.png', Body=img_buffer)
     plt.clf()
 
     # 2. ROC Curve
@@ -135,15 +138,22 @@ def train_and_evaluate(dataset_name, threshold):
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     img_buffer.seek(0)
-    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_roc_curve_{threshold}.png', Body=img_buffer)
+    s3_client.put_object(Bucket='models', Key=f'{prefix}/roc_curve.png', Body=img_buffer)
     
     # 3. Save the model object
     model_buffer = io.BytesIO()
     joblib.dump(model, model_buffer)
     model_buffer.seek(0)
-    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_svm_model_{threshold}.pkl', Body=model_buffer)
+    s3_client.put_object(Bucket='models', Key=f'{prefix}/svm_model.pkl', Body=model_buffer)
+
+    # 4. Save Classification Report (JSON & TXT)
+    report_json_buffer = io.BytesIO(json.dumps(report_dict, indent=2).encode('utf-8'))
+    s3_client.put_object(Bucket='models', Key=f'{prefix}/classification_report.json', Body=report_json_buffer)
     
-    print(f"Training complete. Files uploaded to 'models' bucket with prefix '{dataset_name}_'.")
+    report_txt_buffer = io.BytesIO(report_text.encode('utf-8'))
+    s3_client.put_object(Bucket='models', Key=f'{prefix}/classification_report.txt', Body=report_txt_buffer)
+    
+    print(f"Training complete. Files uploaded to 'models/{prefix}/'.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="K3s Data Pipeline")
