@@ -20,8 +20,6 @@ S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://minio-svc.data-pipeline.svc.
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
 
-TARGET_COL = 'Bankrupt?'
-
 storage_options = {
     "key": S3_ACCESS_KEY,
     "secret": S3_SECRET_KEY,
@@ -33,36 +31,53 @@ s3_client = boto3.client(
     aws_access_key_id=S3_ACCESS_KEY, aws_secret_access_key=S3_SECRET_KEY
 )
 
-def extract():
-    print("--- Step 1: Extracting Data ---")
-    dataset = fetch_ucirepo(id=572) 
-    df = pd.concat([dataset.data.features, dataset.data.targets], axis=1)
+def extract(dataset_name):
+    print(f"--- Step 1: Extracting {dataset_name} Data ---")
     
-    s3_path = 's3://raw-data/bankruptcy_raw.csv'
+    if dataset_name == 'bankruptcy':
+        dataset = fetch_ucirepo(id=572) 
+        df = pd.concat([dataset.data.features, dataset.data.targets], axis=1)
+    elif dataset_name == 'creditcard':
+        # Using the HuggingFace dataset link you provided
+        print("Downloading credit card dataset from HuggingFace...")
+        df = pd.read_csv("hf://datasets/David-Egea/Creditcard-fraud-detection/creditcard.csv")
+    
+    # Save to a dataset-specific path in MinIO
+    s3_path = f's3://raw-data/{dataset_name}/raw.csv'
     df.to_csv(s3_path, index=False, storage_options=storage_options)
-    print(f"Saved raw data to {s3_path}")
+    print(f"Saved raw {dataset_name} data to {s3_path}")
 
-def preprocess():
-    print("--- Step 2: Preprocessing & Feature Selection ---")
-    df = pd.read_csv('s3://raw-data/bankruptcy_raw.csv', storage_options=storage_options)
-    X = df.drop(TARGET_COL, axis=1)
-    y = df[TARGET_COL]
+def preprocess(dataset_name):
+    print(f"--- Step 2: Preprocessing & Feature Selection ({dataset_name}) ---")
+    
+    # Read from the dataset-specific path
+    df = pd.read_csv(f's3://raw-data/{dataset_name}/raw.csv', storage_options=storage_options)
+    
+    # Dynamically set the target column based on the dataset
+    target_col = 'Bankrupt?' if dataset_name == 'bankruptcy' else 'Class'
+    
+    X = df.drop(target_col, axis=1)
+    y = df[target_col]
 
     X_train_unbalance, X_test, y_train_unbalance, y_test = train_test_split(X, y, test_size=0.2, random_state=21)
 
+    # Downsample the majority class to match minority class
     train_data = pd.concat([X_train_unbalance, y_train_unbalance], axis=1)
-    train_min = train_data[train_data[TARGET_COL] == 1]
-    train_maj = train_data[train_data[TARGET_COL] == 0]
+    train_min = train_data[train_data[target_col] == 1]
+    train_maj = train_data[train_data[target_col] == 0]
+    
     train_maj_downsampled = resample(train_maj, replace=False, n_samples=len(train_min), random_state=21)
     train_balanced = pd.concat([train_maj_downsampled, train_min])
     
-    X_train = train_balanced.drop(TARGET_COL, axis=1)
-    y_train = train_balanced[TARGET_COL]
+    X_train = train_balanced.drop(target_col, axis=1)
+    y_train = train_balanced[target_col]
 
+    # Scale
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
+    # L1 Feature Selection
     lasso = LogisticRegression(penalty='l1', solver='liblinear', C=0.1, random_state=21, class_weight='balanced')
     lasso.fit(X_train_scaled, y_train)
     selector = SelectFromModel(lasso, prefit=True)
@@ -70,18 +85,21 @@ def preprocess():
     X_train_reduced = pd.DataFrame(selector.transform(X_train_scaled))
     X_test_reduced = pd.DataFrame(selector.transform(X_test_scaled))
 
-    X_train_reduced.to_csv('s3://processed-data/X_train.csv', index=False, storage_options=storage_options)
-    X_test_reduced.to_csv('s3://processed-data/X_test.csv', index=False, storage_options=storage_options)
-    y_train.to_csv('s3://processed-data/y_train.csv', index=False, storage_options=storage_options)
-    y_test.to_csv('s3://processed-data/y_test.csv', index=False, storage_options=storage_options)
-    print("Preprocessing complete. Data saved to processed-data bucket.")
+    # Save to dataset-specific paths
+    X_train_reduced.to_csv(f's3://processed-data/{dataset_name}/X_train.csv', index=False, storage_options=storage_options)
+    X_test_reduced.to_csv(f's3://processed-data/{dataset_name}/X_test.csv', index=False, storage_options=storage_options)
+    y_train.to_csv(f's3://processed-data/{dataset_name}/y_train.csv', index=False, storage_options=storage_options)
+    y_test.to_csv(f's3://processed-data/{dataset_name}/y_test.csv', index=False, storage_options=storage_options)
+    print(f"Preprocessing complete. Data saved to processed-data/{dataset_name}/.")
 
-def train_and_evaluate(threshold):
-    print(f"--- Step 3: Training & Evaluating SVM (Threshold: {threshold}) ---")
-    X_train = pd.read_csv('s3://processed-data/X_train.csv', storage_options=storage_options)
-    X_test = pd.read_csv('s3://processed-data/X_test.csv', storage_options=storage_options)
-    y_train = pd.read_csv('s3://processed-data/y_train.csv', storage_options=storage_options).squeeze()
-    y_test = pd.read_csv('s3://processed-data/y_test.csv', storage_options=storage_options).squeeze()
+def train_and_evaluate(dataset_name, threshold):
+    print(f"--- Step 3: Training & Evaluating SVM ({dataset_name} | Threshold: {threshold}) ---")
+    
+    # Load from dataset-specific paths
+    X_train = pd.read_csv(f's3://processed-data/{dataset_name}/X_train.csv', storage_options=storage_options)
+    X_test = pd.read_csv(f's3://processed-data/{dataset_name}/X_test.csv', storage_options=storage_options)
+    y_train = pd.read_csv(f's3://processed-data/{dataset_name}/y_train.csv', storage_options=storage_options).squeeze()
+    y_test = pd.read_csv(f's3://processed-data/{dataset_name}/y_test.csv', storage_options=storage_options).squeeze()
 
     param_grid = {'C': [0.01, 0.1, 1, 10], 'gamma': ['scale', 'auto', 0.1, 1], 'kernel': ['rbf']}
     grid = GridSearchCV(SVC(probability=True), param_grid, refit=True, verbose=1, cv=5)
@@ -90,7 +108,6 @@ def train_and_evaluate(threshold):
     model = grid.best_estimator_
     y_prob = model.predict_proba(X_test)[:, 1]
     
-    # Apply the dynamic threshold passed from the command line
     y_pred = (y_prob >= threshold).astype(int)
 
     print(classification_report(y_test, y_pred))
@@ -98,12 +115,12 @@ def train_and_evaluate(threshold):
     # 1. Confusion Matrix
     plt.figure(figsize=(6,5))
     sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues')
-    plt.title(f'Confusion Matrix (Threshold: {threshold})')
+    plt.title(f'Confusion Matrix ({dataset_name.title()} | Threshold: {threshold})')
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     img_buffer.seek(0)
-    # Include threshold in the filename
-    s3_client.put_object(Bucket='models', Key=f'confusion_matrix_{threshold}.png', Body=img_buffer)
+    # Include dataset name and threshold in the S3 object key
+    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_confusion_matrix_{threshold}.png', Body=img_buffer)
     plt.clf()
 
     # 2. ROC Curve
@@ -112,31 +129,30 @@ def train_and_evaluate(threshold):
     plt.figure(figsize=(6,5))
     plt.plot(fpr, tpr, label=f"AUC = {auc:.2f}")
     plt.plot([0, 1], [0, 1], 'k--')
-    plt.title('ROC Curve')
+    plt.title(f'ROC Curve ({dataset_name.title()})')
     img_buffer = io.BytesIO()
     plt.savefig(img_buffer, format='png')
     img_buffer.seek(0)
-    s3_client.put_object(Bucket='models', Key=f'roc_curve_{threshold}.png', Body=img_buffer)
+    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_roc_curve_{threshold}.png', Body=img_buffer)
     
     # 3. Save the model object
     model_buffer = io.BytesIO()
     joblib.dump(model, model_buffer)
     model_buffer.seek(0)
-    s3_client.put_object(Bucket='models', Key=f'svm_model_{threshold}.pkl', Body=model_buffer)
+    s3_client.put_object(Bucket='models', Key=f'{dataset_name}_svm_model_{threshold}.pkl', Body=model_buffer)
     
-    print(f"Training complete. Model and images for threshold {threshold} uploaded to 'models' bucket.")
+    print(f"Training complete. Files uploaded to 'models' bucket with prefix '{dataset_name}_'.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="K3s Data Pipeline")
     parser.add_argument("--step", choices=['extract', 'preprocess', 'train'], required=True)
-    # Add the threshold argument with a default of 0.50
     parser.add_argument("--threshold", type=float, default=0.50, help="Custom threshold for classification (0.0 to 1.0)")
+    parser.add_argument("--dataset", choices=['bankruptcy', 'creditcard'], default='bankruptcy', help="Which dataset to process")
     args = parser.parse_args()
 
     if args.step == 'extract':
-        extract()
+        extract(args.dataset)
     elif args.step == 'preprocess':
-        preprocess()
+        preprocess(args.dataset)
     elif args.step == 'train':
-        # Pass the threshold argument into the function
-        train_and_evaluate(args.threshold)
+        train_and_evaluate(args.dataset, args.threshold)
