@@ -49,6 +49,21 @@ def get_active_node_info():
     except Exception:
         return []
 
+def get_active_dag_runs():
+    """Fetches active (running or queued) DAG runs from Airflow."""
+    try:
+        resp = requests.get(
+            f"{AIRFLOW_URL}/api/v1/dags/{DAG_ID}/dagRuns?limit=10&order_by=-execution_date",
+            auth=(AIRFLOW_USER, AIRFLOW_PASS),
+            timeout=4
+        )
+        if resp.status_code == 200:
+            runs = resp.json().get("dag_runs", [])
+            return [r for r in runs if r.get("state") in ["running", "queued"]]
+    except Exception:
+        pass
+    return []
+
 # --- SIDEBAR: Execution History & Author ---
 with st.sidebar:
     st.header("Predictive Risk Pipeline")
@@ -75,7 +90,8 @@ with st.sidebar:
                     conf = r.get("conf", {})
                     ds = conf.get("dataset", "default")
                     th = conf.get("threshold", "0.50")
-                    st.caption(f"{badge} **{r.get('dag_run_id')}**")
+                    run_id = r.get("dag_run_id")
+                    st.caption(f"{badge} **{run_id}**")
                     st.caption(f"Dataset: `{ds}` | Threshold: `{th}` | State: `{state.upper()}`")
                     st.markdown("---")
             else:
@@ -85,69 +101,68 @@ with st.sidebar:
     except Exception as e:
         st.error(f"Airflow connection: {e}")
 
-# --- MAIN TITLE & AUTHOR ATTRIBUTION ---
+# --- HEADER & PROJECT OVERVIEW ---
 st.title("Predictive Risk Pipeline")
 st.markdown("### Developed by James Stephen")
 st.markdown("""
-- **The Objective**: Evaluate the effectiveness of Support Vector Machines (SVM) with custom decision thresholds in detecting financial risk indicators.
-- **The Use Case**: Determine whether client transactions are fraudulent or if a corporate loan applicant is heading toward bankruptcy. These classifiers provide vital risk mitigation before financial commitments are made.
+- **Objective**: Evaluate Support Vector Machines (SVM) with custom decision thresholds for financial risk detection.
+- **Use Case**: Identify credit card fraud transactions and corporate bankruptcy risks before financial commitments are made.
 """)
 
-# --- PRESENTATION SLIDES SECTION ---
-with st.expander("Presentation Deck (PDF)", expanded=False):
+col_hdr1, col_hdr2 = st.columns([3, 1])
+
+with col_hdr1:
+    with st.expander("System Architecture & ML Model Overview", expanded=False):
+        st.markdown("""
+        **Infrastructure & Cloud-Native Execution**:
+        - **K3s Bare-Metal Cluster**: Airflow dynamically schedules worker pods onto x86_64 worker nodes (`node02`/`node03`).
+        - **Decoupled Architecture**: Frontend (Streamlit), Orchestration (Airflow REST API), and Storage (MinIO S3) run independently in isolated namespaces.
+
+        **Machine Learning Pipeline**:
+        - **Preprocessing**: 80/20 train-test split with 1:1 downsampling to eliminate severe class imbalance without data leakage.
+        - **Feature Selection**: L1-regularized Logistic Regression prunes 85 noisy features from the bankruptcy dataset.
+        - **SVM Training**: RBF-kernel SVM tuned via 5-fold `GridSearchCV` (80 fits) to discover optimal decision boundaries.
+        """)
+
+with col_hdr2:
     pdf_path = os.path.join(os.path.dirname(__file__), "presentation.pdf")
     if os.path.exists(pdf_path):
         with open(pdf_path, "rb") as f:
             st.download_button(
-                label="Download Presentation PDF",
+                label="📄 Download Presentation PDF",
                 data=f,
                 file_name="Predictive_Risk_Pipeline_James_Stephen.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
-    else:
-        st.info("Place `presentation.pdf` in the webapp directory to enable direct PDF downloads.")
-
-col_exp1, col_exp2 = st.columns(2)
-
-with col_exp1:
-    with st.expander("How the Kubernetes & Airflow Architecture Works", expanded=False):
-        st.markdown("""
-        - **Cloud-Native Execution**: Triggering a run sends an HTTP POST request to the internal **Airflow REST API**.
-        - **Ephemeral Worker Pods**: Airflow dynamically schedules isolated `KubernetesPodOperator` pods onto x86_64 worker nodes (`node02`/`node03`).
-        - **Distributed Object Storage**: Processed datasets, trained `.pkl` models, evaluation metrics, and charts are saved directly to S3-compatible **MinIO storage**.
-        - **Decoupled Frontend**: Streamlit queries MinIO and Airflow to present real-time evaluation data without running heavy training locally.
-        """)
-
-with col_exp2:
-    with st.expander("How the Machine Learning Model Works", expanded=False):
-        st.markdown("""
-        - **Data Preprocessing**: Splits data into an 80/20 train-test ratio and resamples the training set to a 1:1 class ratio to handle severe class imbalance without data leakage.
-        - **Dimensionality Reduction**: Applies **L1-regularized Logistic Regression** for feature selection, successfully pruning 85 noisy features from the bankruptcy dataset to accelerate training.
-        - **Model Construction**: Trains a **Support Vector Machine (SVM)** with an RBF kernel using 5-fold `GridSearchCV` (80 total fits across gamma and C parameters) to discover optimal decision margins.
-        """)
 
 st.markdown("---")
 
-# --- UNIFIED CONTROLS & DYNAMIC DATASET CONTEXT ---
+# --- PIPELINE CONTROLS ---
 st.header("1. Pipeline Configuration & Control")
+
+def format_dataset_label(x):
+    if x == "bankruptcy":
+        return "Company Bankruptcy Dataset (UCI | 6,819 instances, 95 features)"
+    elif x == "creditcard":
+        return "Credit Card Fraud Dataset (Hugging Face | 284,807 instances, 30 features)"
+    return str(x)
 
 dataset_choice = st.selectbox(
     "Select Dataset", 
     options=["bankruptcy", "creditcard"],
-    format_func=lambda x: "Company Bankruptcy Dataset" if x == "bankruptcy" else "Credit Card Fraud Dataset"
+    format_func=format_dataset_label
 )
 
-# Dynamic Dataset Context Box
 if dataset_choice == "creditcard":
     st.info(
-        "**Dataset Information (Credit Card Fraud)**: Sourced from Hugging Face, containing 284,807 transactions with 492 fraudulent cases (highly imbalanced). "
-        "28 of the 30 features are anonymized numerical variables resulting from PCA. Target variable: `Class` (1 = Fraud, 0 = Normal)."
+        "**Dataset Information (Credit Card Fraud)**: Sourced from Hugging Face, containing 284,807 transactions with 492 fraudulent cases. "
+        "28 of 30 features are PCA components. Target variable: `Class` (1 = Fraud, 0 = Normal)."
     )
 else:
     st.info(
         "**Dataset Information (Company Bankruptcy)**: Sourced from UCI, containing 6,819 companies with 220 bankrupt cases. "
-        "Contains 95 raw financial metrics such as interest ratios and debt ratios. Target variable: `Bankrupt?` (1 = Bankrupt, 0 = Solvent)."
+        "Contains 95 raw financial metrics. Target variable: `Bankrupt?` (1 = Bankrupt, 0 = Solvent)."
     )
 
 threshold_choice = st.slider(
@@ -156,22 +171,21 @@ threshold_choice = st.slider(
     help="Custom acceptance threshold applied to SVM prediction probabilities."
 )
 
-# Dynamic Smart Threshold Guidance
 if dataset_choice == "creditcard":
     st.caption(
-        "💡 **Recommended Threshold: 0.80**. Maximizing recall with a 0.50 threshold results in 95% of fraud alerts being false positives, "
-        "which severely degrades user trust. A 0.80 threshold maintains high recall (0.84) while boosting precision (0.16)."
+        "💡 **Recommended Threshold: 0.80**. A 0.50 threshold yields ~95% false positive alerts (eroding trust). "
+        "A 0.80 threshold maintains high recall (0.84) while improving precision (0.16)."
     )
 else:
     st.caption(
-        "💡 **Recommended Threshold: 0.50**. In bankruptcy prediction, missing an impending bankruptcy (false negative) causes major loan defaults, "
-        "whereas a false positive only requires manual financial auditing. Therefore, maintaining high recall at threshold 0.50 is optimal."
+        "💡 **Recommended Threshold: 0.50**. Missing a bankruptcy (false negative) causes loan default, whereas a false positive "
+        "only requires manual audit. Maintaining high recall at 0.50 is optimal."
     )
 
 s3 = get_s3_client()
 prefix = f"{dataset_choice}/threshold_{threshold_choice}/"
 
-# Check if model artifacts already exist in MinIO
+# Check if model artifacts exist in MinIO
 artifacts_exist = False
 try:
     s3.head_object(Bucket='models', Key=f"{prefix}classification_report.json")
@@ -179,8 +193,7 @@ try:
 except Exception:
     artifacts_exist = False
 
-run_btn = st.button("Run Pipeline on K3s Cluster", type="primary", use_container_width=True)
-st.caption("ℹ️ **Cluster Parallelism**: You can trigger multiple pipeline runs in parallel. Airflow dynamically schedules worker pods onto worker nodes (`node02`/`node03`) while enforcing cluster resource quotas.")
+run_btn = st.button("🚀 Run Pipeline on K3s Cluster", type="primary", use_container_width=True)
 
 if run_btn:
     endpoint = f"{AIRFLOW_URL}/api/v1/dags/{DAG_ID}/dagRuns"
@@ -190,63 +203,66 @@ if run_btn:
             "threshold": str(threshold_choice)
         }
     }
+    try:
+        response = requests.post(
+            endpoint,
+            auth=(AIRFLOW_USER, AIRFLOW_PASS),
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=10
+        )
+        if response.status_code == 200:
+            run_id = response.json().get("dag_run_id")
+            st.toast(f"✅ Triggered Run `{run_id}`")
+            time.sleep(1)
+            st.rerun()
+        else:
+            st.error(f"Failed to trigger DAG: {response.status_code}")
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
+
+# --- LIVE ACTIVE EXECUTIONS SECTION ---
+active_runs = get_active_dag_runs()
+
+if active_runs:
+    st.markdown("---")
+    st.subheader(f"⚡ Live Cluster Executions ({len(active_runs)} Active)")
     
-    with st.status("Initializing Airflow DAG Run...", expanded=True) as status_box:
-        try:
-            response = requests.post(
-                endpoint,
-                auth=(AIRFLOW_USER, AIRFLOW_PASS),
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(payload),
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                run_id = response.json().get("dag_run_id")
-                status_box.update(label=f"DAG Run Triggered (ID: {run_id}). Polling K3s worker pods...")
-                
-                start_time = time.time()
-                completed = False
-                
-                while time.time() - start_time < 300:
-                    time.sleep(3)
-                    poll_resp = requests.get(
-                        f"{AIRFLOW_URL}/api/v1/dags/{DAG_ID}/dagRuns/{run_id}",
-                        auth=(AIRFLOW_USER, AIRFLOW_PASS),
-                        timeout=5
-                    )
-                    if poll_resp.status_code == 200:
-                        state = poll_resp.json().get("state", "queued")
-                        
-                        # Inspect node assignment from Kubernetes API
-                        node_info = get_active_node_info()
-                        if node_info:
-                            node_str = " | Node Scheduling: " + ", ".join(node_info)
-                        else:
-                            node_str = ""
-                            
-                        status_box.update(label=f"Airflow Execution State: {state.upper()}{node_str}")
-                        
-                        if state == "success":
-                            status_box.update(label="Pipeline Executed Successfully on K3s Cluster!", state="complete", expanded=False)
-                            completed = True
-                            break
-                        elif state == "failed":
-                            status_box.update(label="Pipeline Execution Failed", state="error", expanded=True)
-                            st.error("DAG run failed. Check Airflow logs for details.")
-                            break
-                
-                if completed:
-                    st.rerun()
-            else:
-                status_box.update(label=f"Failed to trigger DAG: {response.status_code}", state="error")
-                st.code(response.text)
-        except Exception as e:
-            status_box.update(label=f"Connection Error: {e}", state="error")
+    current_node_pods = get_active_node_info()
+    if current_node_pods:
+        st.caption("📍 **Active Worker Placements**: " + " | ".join(current_node_pods))
+    
+    TASK_ORDER = ["init_minio_buckets", "extract_raw_data", "preprocess_and_select_features", "train_svm_dynamic"]
+    
+    for r in active_runs:
+        run_id = r.get("dag_run_id")
+        state = r.get("state", "queued").upper()
+        conf = r.get("conf", {})
+        ds = conf.get("dataset", "default")
+        th = conf.get("threshold", "0.50")
+        
+        with st.expander(f"🔄 Run `{run_id}` — `{ds}` @ `{th}` | State: **{state}**", expanded=True):
+            try:
+                ti_resp = requests.get(
+                    f"{AIRFLOW_URL}/api/v1/dags/{DAG_ID}/dagRuns/{run_id}/taskInstances",
+                    auth=(AIRFLOW_USER, AIRFLOW_PASS),
+                    timeout=4
+                )
+                if ti_resp.status_code == 200:
+                    tis = ti_resp.json().get("task_instances", [])
+                    tis.sort(key=lambda x: TASK_ORDER.index(x.get("task_id")) if x.get("task_id") in TASK_ORDER else 99)
+                    
+                    for ti in tis:
+                        t_id = ti.get("task_id")
+                        t_state = (ti.get("state") or "queued").upper()
+                        t_badge = "✅" if t_state == "SUCCESS" else "❌" if t_state == "FAILED" else "⏳" if t_state == "RUNNING" else "💤"
+                        st.write(f"{t_badge} `{t_id}`: **{t_state}**")
+            except Exception as e:
+                st.write(f"Task status error: {e}")
 
 st.markdown("---")
 
-# --- RESULTS & MODEL ARTIFACTS ---
+# --- RESULTS & EVALUATION ---
 st.header(f"2. Evaluation & Results ({dataset_choice.title()} | Threshold {threshold_choice})")
 
 if artifacts_exist:
@@ -292,6 +308,6 @@ if artifacts_exist:
 else:
     st.info(f"No trained model artifacts found for {dataset_choice} at threshold {threshold_choice}. Click 'Run Pipeline on K3s Cluster' above to generate them.")
 
-if auto_refresh:
+if auto_refresh or active_runs:
     time.sleep(10)
     st.rerun()
