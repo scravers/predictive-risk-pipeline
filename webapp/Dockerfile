@@ -4,7 +4,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir streamlit requests boto3
+RUN pip install --no-cache-dir streamlit requests boto3 kubernetes
 
 # Copy the Streamlit app script and optional presentation PDF
 COPY app.py presentation.pdf* ./

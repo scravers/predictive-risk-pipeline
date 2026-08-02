@@ -19,9 +19,6 @@ S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://minio.minio.svc.cluster.loca
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
 
-# Optional Google Slides URL (replace with actual shareable link if available)
-GOOGLE_SLIDES_URL = os.environ.get("GOOGLE_SLIDES_URL", "https://docs.google.com/presentation/d/e/2PACX-1vQ_EXAMPLE/pub?start=false&loop=false&delayms=3000")
-
 st.set_page_config(page_title="Predictive Risk Pipeline", layout="wide")
 
 # Helper: MinIO S3 client
@@ -34,10 +31,28 @@ def get_s3_client():
         aws_secret_access_key=S3_SECRET_KEY
     )
 
+def get_active_node_info():
+    """Queries Kubernetes API for active worker pods in the airflow namespace and returns node placement info."""
+    try:
+        from kubernetes import client, config
+        config.load_incluster_config()
+        v1 = client.CoreV1Api()
+        pods = v1.list_namespaced_pod(namespace="airflow")
+        active_pods = []
+        for p in pods.items:
+            name = p.metadata.name
+            phase = p.status.phase
+            node = p.spec.node_name or "Scheduling..."
+            if phase in ["Running", "Pending"] and not name.startswith(("airflow-postgres", "airflow-webserver", "airflow-scheduler")):
+                active_pods.append(f"`{name}` -> Node: **{node}**")
+        return active_pods
+    except Exception:
+        return []
+
 # --- SIDEBAR: Execution History & Author ---
 with st.sidebar:
     st.header("Predictive Risk Pipeline")
-    st.markdown("**Author**: James Stephen")
+    st.markdown("**Author**: James Stephen  \n**Course**: CMPUT 441")
     st.markdown("---")
     
     st.subheader("Execution History")
@@ -79,26 +94,19 @@ st.markdown("""
 """)
 
 # --- PRESENTATION SLIDES SECTION ---
-with st.expander("Presentation Slides & Deck", expanded=False):
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        st.write("#### View Presentation Slides")
-        st.markdown(f"[Open Google Slides Presentation]({GOOGLE_SLIDES_URL})")
-        st.caption("Click above to view the full presentation deck in your browser.")
-    with col_p2:
-        st.write("#### Download Slides PDF")
-        pdf_path = os.path.join(os.path.dirname(__file__), "presentation.pdf")
-        if os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                st.download_button(
-                    label="Download Presentation PDF",
-                    data=f,
-                    file_name="Predictive_Risk_Pipeline_James_Stephen.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-        else:
-            st.info("Upload `presentation.pdf` to the webapp directory to enable direct PDF downloads.")
+with st.expander("Presentation Deck (PDF)", expanded=False):
+    pdf_path = os.path.join(os.path.dirname(__file__), "presentation.pdf")
+    if os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                label="Download Presentation PDF",
+                data=f,
+                file_name="Predictive_Risk_Pipeline_James_Stephen.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+    else:
+        st.info("Place `presentation.pdf` in the webapp directory to enable direct PDF downloads.")
 
 col_exp1, col_exp2 = st.columns(2)
 
@@ -172,6 +180,7 @@ except Exception:
     artifacts_exist = False
 
 run_btn = st.button("Run Pipeline on K3s Cluster", type="primary", use_container_width=True)
+st.caption("ℹ️ **Cluster Parallelism**: You can trigger multiple pipeline runs in parallel. Airflow dynamically schedules worker pods onto worker nodes (`node02`/`node03`) while enforcing cluster resource quotas.")
 
 if run_btn:
     endpoint = f"{AIRFLOW_URL}/api/v1/dags/{DAG_ID}/dagRuns"
@@ -208,7 +217,16 @@ if run_btn:
                     )
                     if poll_resp.status_code == 200:
                         state = poll_resp.json().get("state", "queued")
-                        status_box.update(label=f"Airflow Execution State: {state.upper()}...")
+                        
+                        # Inspect node assignment from Kubernetes API
+                        node_info = get_active_node_info()
+                        if node_info:
+                            node_str = " | Node Scheduling: " + ", ".join(node_info)
+                        else:
+                            node_str = ""
+                            
+                        status_box.update(label=f"Airflow Execution State: {state.upper()}{node_str}")
+                        
                         if state == "success":
                             status_box.update(label="Pipeline Executed Successfully on K3s Cluster!", state="complete", expanded=False)
                             completed = True
