@@ -6,8 +6,8 @@ WORKDIR /app
 # Install dependencies
 RUN pip install --no-cache-dir streamlit requests boto3
 
-# Copy the Streamlit app script
-COPY app.py .
+# Copy the Streamlit app script and optional presentation PDF
+COPY app.py presentation.pdf* ./
 
 # Streamlit runs on 8501 by default
 EXPOSE 8501
