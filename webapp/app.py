@@ -6,6 +6,7 @@ import io
 import time
 import boto3
 import pandas as pd
+import kubernetes
 from PIL import Image
 
 # --- Configuration ---
