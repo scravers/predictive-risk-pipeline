@@ -34,6 +34,15 @@ s3_client = boto3.client(
 
 def extract(dataset_name):
     print(f"--- Step 1: Extracting {dataset_name} Data ---")
+    s3_key = f"{dataset_name}/raw.csv"
+    
+    # Check if raw data already exists in MinIO
+    try:
+        s3_client.head_object(Bucket='raw-data', Key=s3_key)
+        print(f"✅ Raw data already exists at s3://raw-data/{s3_key}. Skipping download.")
+        return
+    except Exception:
+        print(f"Raw data not found in MinIO. Fetching {dataset_name}...")
     
     if dataset_name == 'bankruptcy':
         dataset = fetch_ucirepo(id=572) 
@@ -46,13 +55,21 @@ def extract(dataset_name):
         df = hf_dataset.to_pandas()
     
     # Save to a dataset-specific path in MinIO
-    s3_path = f's3://raw-data/{dataset_name}/raw.csv'
+    s3_path = f's3://raw-data/{s3_key}'
     df.to_csv(s3_path, index=False, storage_options=storage_options)
     print(f"Saved raw {dataset_name} data to {s3_path}")
 
 def preprocess(dataset_name):
     print(f"--- Step 2: Preprocessing & Feature Selection ({dataset_name}) ---")
     
+    # Check if processed data already exists
+    try:
+        s3_client.head_object(Bucket='processed-data', Key=f"{dataset_name}/X_train.csv")
+        print(f"✅ Processed data already exists at s3://processed-data/{dataset_name}/. Skipping preprocessing.")
+        return
+    except Exception:
+        print(f"Processed data not found. Starting preprocessing for {dataset_name}...")
+
     # Read from the dataset-specific path
     df = pd.read_csv(f's3://raw-data/{dataset_name}/raw.csv', storage_options=storage_options)
     
